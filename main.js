@@ -20,7 +20,7 @@ function init() {
 
     // Camera setup
     camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, 0, 200);
+    camera.position.set(100, 100, 200);
     camera.lookAt(cameraTarget);
 
     // Renderer setup
@@ -56,6 +56,18 @@ function init() {
     const sideLight = new THREE.DirectionalLight(0xffffff, 0.5);
     sideLight.position.set(1, 0, 0);
     scene.add(sideLight);
+
+    // Add print bed
+    const bedGeometry = new THREE.BoxGeometry(200, 2, 200);
+    const bedMaterial = new THREE.MeshPhongMaterial({ 
+        color: 0x808080,
+        transparent: true,
+        opacity: 0.7
+    });
+    const printBed = new THREE.Mesh(bedGeometry, bedMaterial);
+    printBed.position.y = -2; // Position bed so its top surface is exactly at y=0 (thickness is 2)
+    printBed.receiveShadow = true;
+    scene.add(printBed);
 
     // Handle window resize
     window.addEventListener('resize', onWindowResize, false);
@@ -94,21 +106,31 @@ function animate() {
         currentModel.quaternion.rotateTowards(targetQuaternion, step);
         
         if (currentModel.quaternion.angleTo(targetQuaternion) < 0.01) {
-            isRotating = false;
-            targetQuaternion = null;
+            // Complete the rotation
+            currentModel.quaternion.copy(targetQuaternion);
             
-            // Center and adjust position after rotation is complete
+            // Update overhangs
+            updateOverhangsAfterRotation();
+            
+            // Center and place on bed
             const box = new THREE.Box3().setFromObject(currentModel);
             const center = box.getCenter(new THREE.Vector3());
-            currentModel.position.sub(center);
-            currentModel.position.y = -box.min.y;
+            
+            // Place on bed and center
+            currentModel.position.set(
+                -center.x,  // Center X
+                -box.min.y, // Place on bed
+                -center.z   // Center Z
+            );
             
             // Update camera target
             cameraTarget.set(0, 0, 0);
             controls.target.copy(cameraTarget);
             controls.update();
             
-            updateOverhangsAfterRotation();
+            // Clear rotation state
+            isRotating = false;
+            targetQuaternion = null;
         }
     }
 
@@ -170,8 +192,7 @@ function loadModel(file) {
                 const angle = normal.angleTo(new THREE.Vector3(0, 1, 0));
                 const angleInDegrees = THREE.MathUtils.radToDeg(angle);
                 
-                // If angle is greater than 135 degrees (45 degrees overhang), add to overhang geometry
-                // Note: 135 degrees from up vector = 45 degrees overhang
+                // Faces pointing more than 45 degrees down are overhangs
                 if (angleInDegrees > 135) {
                     for (let j = 0; j < 9; j++) {
                         overhangPositions.push(positions[i + j]);
@@ -269,20 +290,27 @@ function loadModel(file) {
         }
 
         if (currentModel) {
-            // Center the model
+            // First scale the model to fit the view
             const box = new THREE.Box3().setFromObject(currentModel);
-            const center = box.getCenter(new THREE.Vector3());
-            currentModel.position.sub(center);
-
-            // Scale the model to fit the view
             const size = box.getSize(new THREE.Vector3());
             const maxDim = Math.max(size.x, size.y, size.z);
             const scale = 100 / maxDim;
             currentModel.scale.multiplyScalar(scale);
 
+            // Recalculate bounding box after scaling
+            box.setFromObject(currentModel);
+            const center = box.getCenter(new THREE.Vector3());
+
+            // Center the model on the print bed
+            currentModel.position.set(
+                -center.x,  // Center X
+                -box.min.y, // Place on bed
+                -center.z   // Center Z
+            );
+
             // Update camera position and target
-            const distance = 200;
-            camera.position.set(0, 0, distance);
+            const distance = Math.max(200, maxDim * 2);
+            camera.position.set(distance/2, distance/2, distance);
             cameraTarget.set(0, 0, 0);
             controls.target.copy(cameraTarget);
             
@@ -431,16 +459,27 @@ function onModelClick(event) {
         // Transform the normal to world space
         normal.transformDirection(intersection.object.matrixWorld);
         
-        // Calculate rotation to align the clicked face's normal with the down vector (0, -1, 0)
-        const downVector = new THREE.Vector3(0, -1, 0);
+        // First, find a rotation that aligns the normal with the Y axis
+        const yAxis = new THREE.Vector3(0, 1, 0);
         const rotationAxis = new THREE.Vector3();
-        rotationAxis.crossVectors(normal, downVector).normalize();
+        rotationAxis.crossVectors(normal, yAxis).normalize();
         
-        const angle = Math.acos(normal.dot(downVector));
+        // If normal and Y axis are parallel or anti-parallel, use X axis for rotation
+        if (rotationAxis.lengthSq() < 0.001) {
+            rotationAxis.set(1, 0, 0);
+        }
+        
+        // Calculate the angle between the vectors
+        const angle = Math.acos(normal.dot(yAxis));
         
         // Create rotation quaternion
         targetQuaternion = new THREE.Quaternion();
         targetQuaternion.setFromAxisAngle(rotationAxis, angle);
+        
+        // Then add a 180-degree rotation around the X axis to flip it face down
+        const flipRotation = new THREE.Quaternion();
+        flipRotation.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI);
+        targetQuaternion.premultiply(flipRotation);
         
         // Start rotation animation
         isRotating = true;
@@ -455,6 +494,17 @@ function updateOverhangsAfterRotation() {
     const worldMatrix = currentModel.matrixWorld;
     const normalMatrix = new THREE.Matrix3().getNormalMatrix(worldMatrix);
 
+    // Remove existing supports if any
+    currentModel.traverse((child) => {
+        if (child.name === 'supports') {
+            child.parent.remove(child);
+        }
+    });
+
+    // Create a group for all supports
+    const supportsGroup = new THREE.Group();
+    supportsGroup.name = 'supports';
+
     currentModel.traverse((child) => {
         if (child instanceof THREE.Mesh) {
             const geometry = child.geometry;
@@ -463,6 +513,7 @@ function updateOverhangsAfterRotation() {
             // Create new geometries
             const normalGeometry = new THREE.BufferGeometry();
             const overhangGeometry = new THREE.BufferGeometry();
+            const supportGeometry = new THREE.BufferGeometry();
 
             // Get position and normal attributes
             const positions = geometry.attributes.position.array;
@@ -472,6 +523,7 @@ function updateOverhangsAfterRotation() {
             const overhangPositions = [];
             const normalNormals = [];
             const overhangNormals = [];
+            const supportVertices = [];
 
             // Process triangles
             for (let i = 0; i < positions.length; i += 9) {
@@ -483,12 +535,48 @@ function updateOverhangsAfterRotation() {
                 const angle = normal.angleTo(upVector);
                 const angleInDegrees = THREE.MathUtils.radToDeg(angle);
 
-                // Store vertices based on angle
+                // Faces pointing more than 45 degrees down are overhangs
                 if (angleInDegrees > 135) {
+                    // Add to overhang geometry
                     for (let j = 0; j < 9; j++) {
                         overhangPositions.push(positions[i + j]);
                         overhangNormals.push(normals[i + j]);
                     }
+
+                    // Create support for this overhang face
+                    // Get the three vertices of the face in world space
+                    const v1 = new THREE.Vector3(positions[i], positions[i + 1], positions[i + 2]);
+                    const v2 = new THREE.Vector3(positions[i + 3], positions[i + 4], positions[i + 5]);
+                    const v3 = new THREE.Vector3(positions[i + 6], positions[i + 7], positions[i + 8]);
+                    v1.applyMatrix4(child.matrixWorld);
+                    v2.applyMatrix4(child.matrixWorld);
+                    v3.applyMatrix4(child.matrixWorld);
+
+                    // Calculate face center
+                    const center = new THREE.Vector3()
+                        .add(v1)
+                        .add(v2)
+                        .add(v3)
+                        .multiplyScalar(1/3);
+
+                    // Create support column vertices
+                    const bottomY = 0; // Print bed level
+                    const supportWidth = 2; // Width of support column
+
+                    // Create a box for the support
+                    supportVertices.push(
+                        // Front face
+                        center.x - supportWidth/2, center.y, center.z - supportWidth/2,
+                        center.x - supportWidth/2, bottomY, center.z - supportWidth/2,
+                        center.x + supportWidth/2, bottomY, center.z - supportWidth/2,
+                        center.x + supportWidth/2, center.y, center.z - supportWidth/2,
+
+                        // Back face
+                        center.x - supportWidth/2, center.y, center.z + supportWidth/2,
+                        center.x - supportWidth/2, bottomY, center.z + supportWidth/2,
+                        center.x + supportWidth/2, bottomY, center.z + supportWidth/2,
+                        center.x + supportWidth/2, center.y, center.z + supportWidth/2
+                    );
                 } else {
                     for (let j = 0; j < 9; j++) {
                         normalPositions.push(positions[i + j]);
@@ -497,19 +585,28 @@ function updateOverhangsAfterRotation() {
                 }
             }
 
-            // Create materials
+            // Create materials with side: THREE.DoubleSide to ensure faces are visible from both sides
             const normalMaterial = new THREE.MeshPhongMaterial({
                 color: 0x3498db,
                 specular: 0x111111,
                 shininess: 30,
-                flatShading: false
+                flatShading: false,
+                side: THREE.DoubleSide
             });
 
             const overhangMaterial = new THREE.MeshPhongMaterial({
                 color: 0xff0000,
                 specular: 0x111111,
                 shininess: 30,
-                flatShading: false
+                flatShading: false,
+                side: THREE.DoubleSide
+            });
+
+            const supportMaterial = new THREE.MeshPhongMaterial({
+                color: 0x808080,
+                transparent: true,
+                opacity: 0.5,
+                side: THREE.DoubleSide
             });
 
             // Create meshes if there are vertices
@@ -529,10 +626,34 @@ function updateOverhangsAfterRotation() {
                 newGroup.add(overhangMesh);
             }
 
-            // Copy transformation
-            newGroup.position.copy(child.position);
-            newGroup.quaternion.copy(child.quaternion);
-            newGroup.scale.copy(child.scale);
+            // Create support mesh if there are support vertices
+            if (supportVertices.length > 0) {
+                const supportPositions = new Float32Array(supportVertices);
+                supportGeometry.setAttribute('position', new THREE.BufferAttribute(supportPositions, 3));
+
+                // Create indices for the box faces
+                const indices = [];
+                for (let i = 0; i < supportVertices.length/12; i++) {
+                    const baseIndex = i * 8;
+                    // Front face
+                    indices.push(baseIndex, baseIndex + 1, baseIndex + 2);
+                    indices.push(baseIndex, baseIndex + 2, baseIndex + 3);
+                    // Back face
+                    indices.push(baseIndex + 4, baseIndex + 6, baseIndex + 5);
+                    indices.push(baseIndex + 4, baseIndex + 7, baseIndex + 6);
+                    // Left face
+                    indices.push(baseIndex, baseIndex + 4, baseIndex + 5);
+                    indices.push(baseIndex, baseIndex + 5, baseIndex + 1);
+                    // Right face
+                    indices.push(baseIndex + 3, baseIndex + 2, baseIndex + 6);
+                    indices.push(baseIndex + 3, baseIndex + 6, baseIndex + 7);
+                }
+                supportGeometry.setIndex(indices);
+                supportGeometry.computeVertexNormals();
+
+                const supportMesh = new THREE.Mesh(supportGeometry, supportMaterial);
+                supportsGroup.add(supportMesh);
+            }
 
             // Replace the old mesh with the new group
             if (child.parent) {
@@ -541,6 +662,11 @@ function updateOverhangsAfterRotation() {
             }
         }
     });
+
+    // Add supports to the model
+    if (supportsGroup.children.length > 0) {
+        currentModel.add(supportsGroup);
+    }
 }
 
 // Initialize the viewer
