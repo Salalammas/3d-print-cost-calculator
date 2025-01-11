@@ -1,0 +1,16 @@
+{
+  "name": "3d-print-cost-calculator",
+  "version": "1.0.0",
+  "description": "A web application to calculate 3D printing costs",
+  "main": "index.js",
+  "scripts": {
+    "start": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "three": "^0.158.0"
+  },
+  "devDependencies": {
+    "vite": "^4.5.0"
+  }
+} 
