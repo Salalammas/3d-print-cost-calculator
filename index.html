@@ -7,21 +7,33 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>3D Print Cost Calculator</h1>
-        </header>
-        
-        <div class="upload-section">
-            <input type="file" id="model-input" accept=".stl,.obj">
-            <label for="model-input" class="upload-button">Upload 3D Model (STL/OBJ)</label>
-        </div>
+    <div class="main-container">
+        <div class="form-section">
+            <h1>CONTACT US</h1>
+            <p class="subtitle">This doesn't commit you to anything—feel free to ask us whatever you'd like!</p>
 
-        <div class="viewer-container">
-            <div id="model-viewer"></div>
-        </div>
+            <div class="form-group">
+                <input type="text" id="name" placeholder="Name" required>
+                <div class="error-message">This field is required. Please input your name.</div>
+            </div>
 
-        <div class="calculator-section">
+            <div class="form-group">
+                <input type="email" id="email" placeholder="Email" required>
+            </div>
+
+            <div class="form-group">
+                <textarea id="message" placeholder="Enter your message..." maxlength="2000"></textarea>
+                <div class="char-count">0 / 2000</div>
+            </div>
+
+            <div class="form-group">
+                <label class="file-upload">
+                    <span class="upload-label">Upload file</span>
+                    <input type="file" id="model-input" accept=".stl,.obj">
+                    <span class="file-chosen">No file chosen</span>
+                </label>
+            </div>
+
             <div class="parameters">
                 <div class="input-group">
                     <label for="material-cost">Material Cost (per gram):</label>
@@ -55,6 +67,18 @@
                     <span>Total Estimated Cost:</span>
                     <span id="total-cost">$0.00</span>
                 </div>
+            </div>
+
+            <div class="recaptcha-container">
+                <div class="g-recaptcha" data-sitekey="your-recaptcha-site-key"></div>
+            </div>
+
+            <button class="send-message">SEND MESSAGE</button>
+        </div>
+
+        <div class="viewer-section">
+            <div class="viewer-container">
+                <div id="model-viewer"></div>
             </div>
         </div>
     </div>

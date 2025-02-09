@@ -7,9 +7,6 @@ import { Raycaster } from 'three';
 let scene, camera, renderer, controls;
 let currentModel = null;
 let raycaster;
-let clickedFace = null;
-let isRotating = false;
-let targetQuaternion = null;
 let cameraTarget = new THREE.Vector3();
 
 // Initialize the 3D viewer
@@ -19,12 +16,13 @@ function init() {
     scene.background = new THREE.Color(0xf0f0f0);
 
     // Camera setup
-    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    camera.position.set(0, 0, 200);
-    camera.lookAt(cameraTarget);
+    const container = document.getElementById('model-viewer');
+    const aspect = container.clientWidth / container.clientHeight;
+    camera = new THREE.PerspectiveCamera(45, aspect, 0.1, 2000);
+    camera.position.set(100, 100, 100);
+    camera.lookAt(0, 0, 0);
 
     // Renderer setup
-    const container = document.getElementById('model-viewer');
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.shadowMap.enabled = true;
@@ -62,56 +60,22 @@ function init() {
 
     // Add raycaster initialization
     raycaster = new THREE.Raycaster();
-    
-    // Add click event listener to the renderer
-    renderer.domElement.addEventListener('click', onModelClick);
 
     animate();
 }
 
 function onWindowResize() {
     const container = document.getElementById('model-viewer');
+
+    // Main viewer resize
     camera.aspect = container.clientWidth / container.clientHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(container.clientWidth, container.clientHeight);
-    
-    // Ensure model stays centered after resize
-    if (currentModel) {
-        const box = new THREE.Box3().setFromObject(currentModel);
-        const size = box.getSize(new THREE.Vector3());
-        const maxDim = Math.max(size.x, size.y, size.z);
-        const distance = maxDim * 2;
-        camera.position.setLength(distance);
-    }
 }
 
 function animate() {
     requestAnimationFrame(animate);
     controls.update();
-
-    if (isRotating && targetQuaternion) {
-        const step = 0.05;
-        currentModel.quaternion.rotateTowards(targetQuaternion, step);
-        
-        if (currentModel.quaternion.angleTo(targetQuaternion) < 0.01) {
-            isRotating = false;
-            targetQuaternion = null;
-            
-            // Center and adjust position after rotation is complete
-            const box = new THREE.Box3().setFromObject(currentModel);
-            const center = box.getCenter(new THREE.Vector3());
-            currentModel.position.sub(center);
-            currentModel.position.y = -box.min.y;
-            
-            // Update camera target
-            cameraTarget.set(0, 0, 0);
-            controls.target.copy(cameraTarget);
-            controls.update();
-            
-            updateOverhangsAfterRotation();
-        }
-    }
-
     renderer.render(scene, camera);
 }
 
@@ -121,7 +85,7 @@ function loadModel(file) {
     reader.onload = function(event) {
         const contents = event.target.result;
         
-        // Remove existing model if any
+        // Remove existing model
         if (currentModel) {
             scene.remove(currentModel);
         }
@@ -133,164 +97,65 @@ function loadModel(file) {
             const loader = new STLLoader();
             const geometry = loader.parse(contents);
             
-            // Create two materials for normal and overhang surfaces
-            const normalMaterial = new THREE.MeshPhongMaterial({
+            const material = new THREE.MeshPhongMaterial({
                 color: 0x3498db,
                 specular: 0x111111,
                 shininess: 30,
                 flatShading: false
             });
-            
-            const overhangMaterial = new THREE.MeshPhongMaterial({
-                color: 0xff0000,
-                specular: 0x111111,
-                shininess: 30,
-                flatShading: false
-            });
 
-            // Analyze geometry and create separate geometries for normal and overhang faces
-            const positions = geometry.attributes.position.array;
-            const normals = geometry.attributes.normal.array;
-            
-            const normalGeometry = new THREE.BufferGeometry();
-            const overhangGeometry = new THREE.BufferGeometry();
-            
-            const normalPositions = [];
-            const overhangPositions = [];
-            const normalNormals = [];
-            const overhangNormals = [];
-
-            // Check each face
-            for (let i = 0; i < positions.length; i += 9) {
-                const normal = new THREE.Vector3(
-                    normals[i], normals[i + 1], normals[i + 2]
-                );
-                
-                // Calculate angle between normal and up vector (0, 1, 0)
-                const angle = normal.angleTo(new THREE.Vector3(0, 1, 0));
-                const angleInDegrees = THREE.MathUtils.radToDeg(angle);
-                
-                // If angle is greater than 135 degrees (45 degrees overhang), add to overhang geometry
-                // Note: 135 degrees from up vector = 45 degrees overhang
-                if (angleInDegrees > 135) {
-                    for (let j = 0; j < 9; j++) {
-                        overhangPositions.push(positions[i + j]);
-                        overhangNormals.push(normals[i + j]);
-                    }
-                } else {
-                    for (let j = 0; j < 9; j++) {
-                        normalPositions.push(positions[i + j]);
-                        normalNormals.push(normals[i + j]);
-                    }
-                }
-            }
-
-            // Create normal mesh
-            normalGeometry.setAttribute('position', new THREE.Float32BufferAttribute(normalPositions, 3));
-            normalGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(normalNormals, 3));
-            const normalMesh = new THREE.Mesh(normalGeometry, normalMaterial);
-
-            // Create overhang mesh
-            overhangGeometry.setAttribute('position', new THREE.Float32BufferAttribute(overhangPositions, 3));
-            overhangGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(overhangNormals, 3));
-            const overhangMesh = new THREE.Mesh(overhangGeometry, overhangMaterial);
-
-            // Create a group to hold both meshes
-            currentModel = new THREE.Group();
-            currentModel.add(normalMesh);
-            currentModel.add(overhangMesh);
+            currentModel = new THREE.Mesh(geometry, material);
 
         } else if (extension === 'obj') {
             const loader = new OBJLoader();
             currentModel = loader.parse(contents);
             
-            // Apply overhang detection to each mesh in the OBJ model
+            // Apply material to OBJ model
             currentModel.traverse((child) => {
                 if (child instanceof THREE.Mesh) {
-                    const geometry = child.geometry;
-                    const positions = geometry.attributes.position.array;
-                    const normals = geometry.attributes.normal.array;
-
-                    const normalGeometry = new THREE.BufferGeometry();
-                    const overhangGeometry = new THREE.BufferGeometry();
-                    
-                    const normalPositions = [];
-                    const overhangPositions = [];
-                    const normalNormals = [];
-                    const overhangNormals = [];
-
-                    for (let i = 0; i < positions.length; i += 9) {
-                        const normal = new THREE.Vector3(
-                            normals[i], normals[i + 1], normals[i + 2]
-                        );
-                        
-                        const angle = normal.angleTo(new THREE.Vector3(0, 1, 0));
-                        const angleInDegrees = THREE.MathUtils.radToDeg(angle);
-                        
-                        if (angleInDegrees > 135) {
-                            for (let j = 0; j < 9; j++) {
-                                overhangPositions.push(positions[i + j]);
-                                overhangNormals.push(normals[i + j]);
-                            }
-                        } else {
-                            for (let j = 0; j < 9; j++) {
-                                normalPositions.push(positions[i + j]);
-                                normalNormals.push(normals[i + j]);
-                            }
-                        }
-                    }
-
-                    normalGeometry.setAttribute('position', new THREE.Float32BufferAttribute(normalPositions, 3));
-                    normalGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(normalNormals, 3));
-                    const normalMesh = new THREE.Mesh(normalGeometry, new THREE.MeshPhongMaterial({
+                    child.material = new THREE.MeshPhongMaterial({
                         color: 0x3498db,
                         specular: 0x111111,
                         shininess: 30,
                         flatShading: false
-                    }));
-
-                    overhangGeometry.setAttribute('position', new THREE.Float32BufferAttribute(overhangPositions, 3));
-                    overhangGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(overhangNormals, 3));
-                    const overhangMesh = new THREE.Mesh(overhangGeometry, new THREE.MeshPhongMaterial({
-                        color: 0xff0000,
-                        specular: 0x111111,
-                        shininess: 30,
-                        flatShading: false
-                    }));
-
-                    // Replace the original mesh with a group containing both normal and overhang meshes
-                    const group = new THREE.Group();
-                    group.add(normalMesh);
-                    group.add(overhangMesh);
-                    child.parent.add(group);
-                    child.parent.remove(child);
+                    });
                 }
             });
         }
 
         if (currentModel) {
-            // Center the model
+            // Center and scale the model
             const box = new THREE.Box3().setFromObject(currentModel);
             const center = box.getCenter(new THREE.Vector3());
-            currentModel.position.sub(center);
-
-            // Scale the model to fit the view
             const size = box.getSize(new THREE.Vector3());
             const maxDim = Math.max(size.x, size.y, size.z);
-            const scale = 100 / maxDim;
-            currentModel.scale.multiplyScalar(scale);
-
-            // Update camera position and target
-            const distance = 200;
-            camera.position.set(0, 0, distance);
-            cameraTarget.set(0, 0, 0);
-            controls.target.copy(cameraTarget);
             
-            // Reset camera rotation
-            camera.lookAt(cameraTarget);
+            // Scale to a reasonable size (50 units)
+            const scale = 50 / maxDim;
+            currentModel.scale.multiplyScalar(scale);
+            
+            // Recalculate box after scaling
+            box.setFromObject(currentModel);
+            center.copy(box.getCenter(new THREE.Vector3()));
+            
+            // Center the model at origin
+            currentModel.position.sub(center);
+            currentModel.position.y = -box.min.y;
+
+            // Add to scene
+            scene.add(currentModel);
+
+            // Set up camera
+            const distance = maxDim * 3;
+            camera.position.set(distance, distance, distance);
+            camera.lookAt(0, 0, 0);
+            controls.target.set(0, 0, 0);
+            
+            // Update controls
+            controls.minDistance = maxDim;
+            controls.maxDistance = maxDim * 5;
             controls.update();
 
-            scene.add(currentModel);
             calculateCosts();
         }
     };
@@ -390,7 +255,11 @@ function signedVolumeOfTriangle(p1, p2, p3) {
 document.getElementById('model-input').addEventListener('change', (event) => {
     const file = event.target.files[0];
     if (file) {
+        document.querySelector('.file-chosen').textContent = file.name;
         loadModel(file);
+        
+        // Update message with price after model loads
+        setTimeout(updateMessage, 100); // Small delay to ensure costs are calculated
     }
 });
 
@@ -402,145 +271,34 @@ document.getElementById('infill').addEventListener('input', (event) => {
 document.getElementById('material-cost').addEventListener('input', calculateCosts);
 document.getElementById('print-time-cost').addEventListener('input', calculateCosts);
 
-// Add new function for click handling
-function onModelClick(event) {
-    if (!currentModel || isRotating) return;
+// Character count functionality
+const messageTextarea = document.getElementById('message');
+const charCount = document.querySelector('.char-count');
 
-    const container = document.getElementById('model-viewer');
-    const rect = container.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / container.clientWidth) * 2 - 1;
-    const y = -((event.clientY - rect.top) / container.clientHeight) * 2 + 1;
+messageTextarea.addEventListener('input', (event) => {
+    const length = event.target.value.length;
+    charCount.textContent = `${length} / 2000`;
+});
 
-    raycaster.setFromCamera(new THREE.Vector2(x, y), camera);
+// Update message with calculated price
+function updateMessage() {
+    const volume = document.getElementById('volume').textContent;
+    const weight = document.getElementById('weight').textContent;
+    const materialCost = document.getElementById('material-cost-result').textContent;
+    const totalCost = document.getElementById('total-cost').textContent;
+    
+    const message = `Hi, I'd like to get this 3D model printed.
 
-    // Get all meshes from the model
-    const meshes = [];
-    currentModel.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-            meshes.push(child);
-        }
-    });
+Model details:
+- Volume: ${volume}
+- Weight: ${weight}
+- Material Cost: ${materialCost}
+- Total Estimated Cost: ${totalCost}
 
-    const intersects = raycaster.intersectObjects(meshes);
+Please let me know if this is possible and when it could be ready.`;
 
-    if (intersects.length > 0) {
-        const intersection = intersects[0];
-        const face = intersection.face;
-        const normal = face.normal.clone();
-        
-        // Transform the normal to world space
-        normal.transformDirection(intersection.object.matrixWorld);
-        
-        // Calculate rotation to align the clicked face's normal with the down vector (0, -1, 0)
-        const downVector = new THREE.Vector3(0, -1, 0);
-        const rotationAxis = new THREE.Vector3();
-        rotationAxis.crossVectors(normal, downVector).normalize();
-        
-        const angle = Math.acos(normal.dot(downVector));
-        
-        // Create rotation quaternion
-        targetQuaternion = new THREE.Quaternion();
-        targetQuaternion.setFromAxisAngle(rotationAxis, angle);
-        
-        // Start rotation animation
-        isRotating = true;
-    }
-}
-
-// Add new function for updating overhangs after rotation
-function updateOverhangsAfterRotation() {
-    if (!currentModel) return;
-
-    const upVector = new THREE.Vector3(0, 1, 0);
-    const worldMatrix = currentModel.matrixWorld;
-    const normalMatrix = new THREE.Matrix3().getNormalMatrix(worldMatrix);
-
-    currentModel.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-            const geometry = child.geometry;
-            if (!geometry.isBufferGeometry) return;
-
-            // Create new geometries
-            const normalGeometry = new THREE.BufferGeometry();
-            const overhangGeometry = new THREE.BufferGeometry();
-
-            // Get position and normal attributes
-            const positions = geometry.attributes.position.array;
-            const normals = geometry.attributes.normal.array;
-            
-            const normalPositions = [];
-            const overhangPositions = [];
-            const normalNormals = [];
-            const overhangNormals = [];
-
-            // Process triangles
-            for (let i = 0; i < positions.length; i += 9) {
-                // Get face normal in world space
-                const normal = new THREE.Vector3(
-                    normals[i], normals[i + 1], normals[i + 2]
-                ).applyMatrix3(normalMatrix).normalize();
-
-                const angle = normal.angleTo(upVector);
-                const angleInDegrees = THREE.MathUtils.radToDeg(angle);
-
-                // Store vertices based on angle
-                if (angleInDegrees > 135) {
-                    for (let j = 0; j < 9; j++) {
-                        overhangPositions.push(positions[i + j]);
-                        overhangNormals.push(normals[i + j]);
-                    }
-                } else {
-                    for (let j = 0; j < 9; j++) {
-                        normalPositions.push(positions[i + j]);
-                        normalNormals.push(normals[i + j]);
-                    }
-                }
-            }
-
-            // Create materials
-            const normalMaterial = new THREE.MeshPhongMaterial({
-                color: 0x3498db,
-                specular: 0x111111,
-                shininess: 30,
-                flatShading: false
-            });
-
-            const overhangMaterial = new THREE.MeshPhongMaterial({
-                color: 0xff0000,
-                specular: 0x111111,
-                shininess: 30,
-                flatShading: false
-            });
-
-            // Create meshes if there are vertices
-            const newGroup = new THREE.Group();
-            
-            if (normalPositions.length > 0) {
-                normalGeometry.setAttribute('position', new THREE.Float32BufferAttribute(normalPositions, 3));
-                normalGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(normalNormals, 3));
-                const normalMesh = new THREE.Mesh(normalGeometry, normalMaterial);
-                newGroup.add(normalMesh);
-            }
-
-            if (overhangPositions.length > 0) {
-                overhangGeometry.setAttribute('position', new THREE.Float32BufferAttribute(overhangPositions, 3));
-                overhangGeometry.setAttribute('normal', new THREE.Float32BufferAttribute(overhangNormals, 3));
-                const overhangMesh = new THREE.Mesh(overhangGeometry, overhangMaterial);
-                newGroup.add(overhangMesh);
-            }
-
-            // Copy transformation
-            newGroup.position.copy(child.position);
-            newGroup.quaternion.copy(child.quaternion);
-            newGroup.scale.copy(child.scale);
-
-            // Replace the old mesh with the new group
-            if (child.parent) {
-                child.parent.add(newGroup);
-                child.parent.remove(child);
-            }
-        }
-    });
+    messageTextarea.value = message;
+    messageTextarea.dispatchEvent(new Event('input')); // Update char count
 }
 
 // Initialize the viewer
